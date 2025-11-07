@@ -1,0 +1,109 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run type checking
+      run: npm run type-check
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run tests
+      run: npm run test:ci
+
+    - name: Build application
+      run: npm run build
+      env:
+        DATABASE_URL: "file:./prisma/dev.db"
+        NEXTAUTH_SECRET: "test-secret"
+        ENCRYPTION_KEY: "test-key-123456789012345678901234"
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run security audit
+      run: npm audit --audit-level high
+
+  deploy-preview:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build for preview
+      run: npm run build
+      env:
+        DATABASE_URL: "file:./prisma/dev.db"
+        NEXTAUTH_SECRET: "preview-secret"
+        ENCRYPTION_KEY: "preview-key-123456789012345678901234"
+
+  deploy-production:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build application
+      run: npm run build
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
+        ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+
+    - name: Deploy to Vercel
+      run: |
+        npx vercel --prod --token=${{ secrets.VERCEL_TOKEN }}
+      env:
+        VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

@@ -1,0 +1,128 @@
+import { NextRequest } from 'next/server'
+import { callLLMApi } from '@/services/api-client'
+import { ProviderConfig } from '@/lib/config-schemas'
+
+interface LLMRequest {
+  provider: string;
+  messages: Array<{ role: string; content: string }>;
+  model?: string;
+  stream?: boolean;
+}
+
+// Simple validation function for API key format
+function validateApiKeyFormat(provider: string, apiKey: string): boolean {
+  if (!apiKey || typeof apiKey !== 'string') {
+    return false;
+  }
+  
+  // Basic validation patterns for different providers
+  switch (provider) {
+    case 'openai':
+      return apiKey.startsWith('sk-') && apiKey.length > 20;
+    case 'anthropic':
+      return apiKey.startsWith('sk-ant-') && apiKey.length > 20;
+    case 'google':
+      return apiKey.length > 30 && !apiKey.includes(' ');
+    case 'openrouter':
+      return apiKey.startsWith('sk-or-') && apiKey.length > 20;
+    default:
+      return apiKey.length > 10; // Basic check for other providers
+  }
+}
+
+// Simple rate limiter using in-memory store
+const rateLimits = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(provider: string, config: ProviderConfig): boolean {
+  const key = `rate_limit:${provider}`;
+  const now = Date.now();
+  const windowMs = config.rateLimits.window;
+  const maxRequests = config.rateLimits.requests;
+  
+  const limitInfo = rateLimits.get(key);
+  if (!limitInfo || now > limitInfo.resetTime) {
+    // Reset the counter
+    rateLimits.set(key, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+  
+  if (limitInfo.count >= maxRequests) {
+    return false; // Rate limit exceeded
+  }
+  
+  // Increment the counter
+  rateLimits.set(key, { count: limitInfo.count + 1, resetTime: limitInfo.resetTime });
+  return true;
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Get request data
+    const body: LLMRequest = await request.json()
+    const { provider, messages, model } = body
+
+    // Validate request
+    if (!provider || !messages || !Array.isArray(messages) || messages.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Provider and messages are required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Get provider config
+    let providerConfig: ProviderConfig | null = null
+    try {
+      const storedConfigs = localStorage.getItem('providerConfigs')
+      if (storedConfigs) {
+        const configs = JSON.parse(storedConfigs)
+        providerConfig = configs[provider]
+      }
+    } catch (e) {
+      console.error('Failed to get provider config:', e)
+    }
+
+    if (!providerConfig || !providerConfig.apiKey) {
+      return new Response(
+        JSON.stringify({ error: `Provider ${provider} is not configured` }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Validate API key format
+    if (!validateApiKeyFormat(provider, providerConfig.apiKey)) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid API key format for the selected provider' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Check rate limits
+    if (!checkRateLimit(provider, providerConfig)) {
+      return new Response(
+        JSON.stringify({ error: 'Rate limit exceeded' }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Call the LLM API
+    const response = await callLLMApi(provider, messages, {
+      model: model || providerConfig.models[0],
+      stream: false, // For now, we'll implement streaming later
+    })
+
+    return new Response(
+      JSON.stringify(response),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  } catch (error: any) {
+    console.error('LLM API error:', error)
+    
+    return new Response(
+      JSON.stringify({ 
+        error: error.message || 'Internal server error',
+        type: error.constructor?.name
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+}

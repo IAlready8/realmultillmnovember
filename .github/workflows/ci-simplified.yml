@@ -1,0 +1,232 @@
+# Simplified CI/CD Pipeline for RealMultiLLM
+# This workflow consolidates multiple workflows into a single, manageable pipeline
+
+name: 🚀 CI/CD Pipeline (Simplified)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Prevent multiple workflow runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  FORCE_COLOR: 3
+
+jobs:
+  # Phase 1: Code Quality and Validation
+  validate:
+    name: 🔍 Code Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: ✅ Type Check
+        run: npm run type-check
+
+      - name: 🎨 Lint
+        run: npm run lint
+
+  # Phase 2: Testing
+  test:
+    name: 🧪 Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: validate
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 🧪 Run Tests
+        run: npm run test:run
+        env:
+          NODE_ENV: test
+          NEXTAUTH_SECRET: test-secret-key-for-testing-purposes-only-32-characters
+          DATABASE_URL: file:./test.db
+          ENCRYPTION_MASTER_KEY: test-encryption-key-64-characters-long-for-testing-purposes-only123456789012
+          ALLOW_DEMO_MODE: true
+
+      - name: 📊 Upload Coverage Reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+
+  # Phase 3: Build Verification
+  build:
+    name: 🔨 Build Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [validate, test]
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 🔨 Build Application
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: 📦 Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: build-artifacts
+          path: |
+            .next
+            public
+          retention-days: 7
+
+      - name: 📏 Bundle Size Analysis
+        run: |
+          if [ -d ".next/static" ]; then
+            JS_SIZE=$(find .next/static -name "*.js" -exec wc -c {} + | tail -1 | awk '{print $1/1024/1024}')
+            echo "JavaScript bundle size: ${JS_SIZE}MB"
+            if (( $(echo "$JS_SIZE > 5" | bc -l) )); then
+              echo "::warning::JavaScript bundle size exceeds 5MB"
+            fi
+          fi
+
+  # Phase 4: Database Schema Validation
+  database:
+    name: 🗄️ Database Schema Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: validate
+    if: ${{ github.event_name == 'pull_request' }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 🗄️ Validate Prisma Schema
+        run: npx prisma validate
+
+      - name: 🔄 Generate Prisma Client
+        run: npx prisma generate
+
+  # Phase 5: Deployment (Production only)
+  deploy:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [validate, test, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 🔨 Build for Production
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: 🚀 Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+n          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+
+  # Phase 6: Post-Deployment Verification
+  verify:
+    name: ✅ Post-Deployment Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: deploy
+    if: always() && needs.deploy.result == 'success'
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: ✅ Run Health Check
+        run: npm run verify:build
+
+      - name: 📊 Performance Test
+        run: |
+          echo "Performance metrics:"
+          echo "- Build time: ${{ needs.build.outputs.build_time }}s"
+          echo "- Bundle size: Check artifacts"
+          echo "- Test coverage: See codecov report"
+
+# Workflow-level outputs
+outputs:
+  build_status:
+    description: "Build status result"
+    value: ${{ jobs.build.result }}
+  test_coverage:
+    description: "Test coverage percentage"
+    value: ${{ jobs.test.outputs.coverage }}
+  deployment_url:
+    description: "Production deployment URL"
+    value: ${{ jobs.deploy.outputs.preview-url }}

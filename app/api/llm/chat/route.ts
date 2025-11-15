@@ -1,128 +1,153 @@
-import { NextRequest } from 'next/server'
-import { callLLMApi } from '@/services/api-client'
-import { ProviderConfig } from '@/lib/config-schemas'
+import { auth } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import { NextRequest, NextResponse } from 'next/server';
+import { errorManager, createErrorContext, LLMProviderError, NotImplementedError } from '@/lib/error-system';
+import { decrypt } from '@/lib/crypto';
 
-interface LLMRequest {
-  provider: string;
-  messages: Array<{ role: string; content: string }>;
-  model?: string;
-  stream?: boolean;
+// ===== OpenAI Provider Logic =====
+async function chatOpenAI(request: any, apiKey: string, baseUrl?: string): Promise<any> {
+    const effectiveBaseUrl = baseUrl || 'https://api.openai.com/v1';
+    const model = request.model || 'gpt-3.5-turbo';
+
+    const response = await fetch(`${effectiveBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+            model,
+            messages: request.messages,
+            temperature: request.temperature ?? 0.7,
+            max_tokens: request.max_tokens ?? 4096,
+            stream: false,
+        }),
+        signal: AbortSignal.timeout(60000),
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new LLMProviderError('openai', errorBody.error?.message || `HTTP ${response.status}`, createErrorContext('/api/llm/chat', request.userId, { streaming: false }));
+    }
+    const data = await response.json();
+    return { content: data.choices[0].message?.content || '', finish_reason: data.choices[0].finish_reason, usage: data.usage };
 }
 
-// Simple validation function for API key format
-function validateApiKeyFormat(provider: string, apiKey: string): boolean {
-  if (!apiKey || typeof apiKey !== 'string') {
-    return false;
-  }
-  
-  // Basic validation patterns for different providers
-  switch (provider) {
-    case 'openai':
-      return apiKey.startsWith('sk-') && apiKey.length > 20;
-    case 'anthropic':
-      return apiKey.startsWith('sk-ant-') && apiKey.length > 20;
-    case 'google':
-      return apiKey.length > 30 && !apiKey.includes(' ');
-    case 'openrouter':
-      return apiKey.startsWith('sk-or-') && apiKey.length > 20;
-    default:
-      return apiKey.length > 10; // Basic check for other providers
-  }
-}
+async function* streamOpenAI(request: any, apiKey: string, baseUrl?: string): AsyncGenerator<string, void, undefined> {
+    const effectiveBaseUrl = baseUrl || 'https://api.openai.com/v1';
+    const model = request.model || 'gpt-3.5-turbo';
 
-// Simple rate limiter using in-memory store
-const rateLimits = new Map<string, { count: number; resetTime: number }>();
+    const response = await fetch(`${effectiveBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+            model,
+            messages: request.messages,
+            temperature: request.temperature ?? 0.7,
+            max_tokens: request.max_tokens ?? 4096,
+            stream: true,
+        }),
+    });
 
-function checkRateLimit(provider: string, config: ProviderConfig): boolean {
-  const key = `rate_limit:${provider}`;
-  const now = Date.now();
-  const windowMs = config.rateLimits.window;
-  const maxRequests = config.rateLimits.requests;
-  
-  const limitInfo = rateLimits.get(key);
-  if (!limitInfo || now > limitInfo.resetTime) {
-    // Reset the counter
-    rateLimits.set(key, { count: 1, resetTime: now + windowMs });
-    return true;
-  }
-  
-  if (limitInfo.count >= maxRequests) {
-    return false; // Rate limit exceeded
-  }
-  
-  // Increment the counter
-  rateLimits.set(key, { count: limitInfo.count + 1, resetTime: limitInfo.resetTime });
-  return true;
-}
-
-export async function POST(request: NextRequest) {
-  try {
-    // Get request data
-    const body: LLMRequest = await request.json()
-    const { provider, messages, model } = body
-
-    // Validate request
-    if (!provider || !messages || !Array.isArray(messages) || messages.length === 0) {
-      return new Response(
-        JSON.stringify({ error: 'Provider and messages are required' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      )
+    if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new LLMProviderError('openai', errorBody.error?.message || `HTTP ${response.status}`, createErrorContext('/api/llm/chat', request.userId, { streaming: true }));
     }
 
-    // Get provider config
-    let providerConfig: ProviderConfig | null = null
+    if (!response.body) throw new LLMProviderError('openai', 'No response body received', createErrorContext('/api/llm/chat', request.userId));
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
     try {
-      const storedConfigs = localStorage.getItem('providerConfigs')
-      if (storedConfigs) {
-        const configs = JSON.parse(storedConfigs)
-        providerConfig = configs[provider]
-      }
-    } catch (e) {
-      console.error('Failed to get provider config:', e)
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const lines = decoder.decode(value, { stream: true }).split('\n').filter(line => line.trim() !== '');
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') return;
+                    try {
+                        const content = JSON.parse(data).choices[0]?.delta?.content;
+                        if (content) yield content;
+                    } catch (e) { /* Ignore malformed JSON */ }
+                }
+            }
+        }
+    } finally {
+        reader.releaseLock();
     }
+}
 
-    if (!providerConfig || !providerConfig.apiKey) {
-      return new Response(
-        JSON.stringify({ error: `Provider ${provider} is not configured` }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      )
+// ===== Provider Factory =====
+const providerFactory = {
+    openai: {
+        chat: chatOpenAI,
+        stream: streamOpenAI,
+    },
+    anthropic: {
+        chat: async () => { throw new NotImplementedError('Anthropic chat not implemented') },
+        stream: async function*() { throw new NotImplementedError('Anthropic stream not implemented') },
+    },
+    googleai: {
+        chat: async () => { throw new NotImplementedError('GoogleAI chat not implemented') },
+        stream: async function*() { throw new NotImplementedError('GoogleAI stream not implemented') },
+    },
+};
+
+// ===== Main POST Handler =====
+export async function POST(req: NextRequest) {
+    try {
+        const session = await auth();
+        if (!session?.user?.id) {
+            return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+        }
+        const userId = session.user.id;
+
+        const body = await req.json();
+        const { provider = 'openai', messages, model, temperature, max_tokens, stream = true } = body;
+
+        if (!messages || !Array.isArray(messages) || messages.length === 0) {
+            return new NextResponse(JSON.stringify({ error: 'Messages are required' }), { status: 400 });
+        }
+
+        const providerImplementation = providerFactory[provider as keyof typeof providerFactory];
+        if (!providerImplementation) {
+            return new NextResponse(JSON.stringify({ error: `Provider '${provider}' not supported` }), { status: 400 });
+        }
+
+        const providerConfig = await prisma.providerConfig.findFirst({ where: { userId, provider } });
+        if (!providerConfig?.key) {
+            return new NextResponse(JSON.stringify({ error: `API key for ${provider} not configured` }), { status: 400 });
+        }
+
+        const apiKey = decrypt(providerConfig.key);
+        const requestPayload = { messages, model, temperature, max_tokens, userId };
+        const baseUrl = providerConfig.baseUrl || undefined;
+
+        if (stream) {
+            const readableStream = new ReadableStream({
+                async start(controller) {
+                    try {
+                        const generator = providerImplementation.stream(requestPayload, apiKey, baseUrl);
+                        for await (const chunk of generator) {
+                            controller.enqueue(new TextEncoder().encode(chunk));
+                        }
+                        controller.close();
+                    } catch (error) {
+                        const context = createErrorContext('/api/llm/chat', userId, { provider });
+                        await errorManager.logError(error as Error, context);
+                        controller.error(error);
+                    }
+                },
+            });
+            return new Response(readableStream, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+        } else {
+            const result = await providerImplementation.chat(requestPayload, apiKey, baseUrl);
+            return NextResponse.json(result);
+        }
+
+    } catch (error) {
+        const context = createErrorContext('/api/llm/chat');
+        await errorManager.logError(error as Error, context);
+        const errorMessage = error instanceof Error ? error.message : 'An internal server error occurred';
+        return new NextResponse(JSON.stringify({ error: errorMessage }), { status: 500 });
     }
-
-    // Validate API key format
-    if (!validateApiKeyFormat(provider, providerConfig.apiKey)) {
-      return new Response(
-        JSON.stringify({ error: 'Invalid API key format for the selected provider' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      )
-    }
-
-    // Check rate limits
-    if (!checkRateLimit(provider, providerConfig)) {
-      return new Response(
-        JSON.stringify({ error: 'Rate limit exceeded' }),
-        { status: 429, headers: { 'Content-Type': 'application/json' } }
-      )
-    }
-
-    // Call the LLM API
-    const response = await callLLMApi(provider, messages, {
-      model: model || providerConfig.models[0],
-      stream: false, // For now, we'll implement streaming later
-    })
-
-    return new Response(
-      JSON.stringify(response),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    )
-  } catch (error: any) {
-    console.error('LLM API error:', error)
-    
-    return new Response(
-      JSON.stringify({ 
-        error: error.message || 'Internal server error',
-        type: error.constructor?.name
-      }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    )
-  }
 }

@@ -115,64 +115,37 @@ export class OpenAIService {
     })
 
     try {
-      const config = request.userId ? await this.getConfig(request.userId) : null
-      const apiKey = config?.apiKey
-      const baseUrl = config?.baseUrl || this.baseUrl
-      const model = request.model || 'gpt-3.5-turbo'
-
-      if (!apiKey) {
-        throw new ValidationError('OpenAI API key not configured', 'api_key', context)
+      if (!request.userId) {
+        throw new ValidationError('User ID is required for chat', 'userId', context)
       }
-
-      // Validate request
       if (!request.messages || request.messages.length === 0) {
         throw new ValidationError('Messages array is required and cannot be empty', 'messages', context)
       }
 
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await fetch('/api/llm/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'User-Agent': 'Personal-LLM-Tool/1.0',
         },
         body: JSON.stringify({
-          model,
+          provider: 'openai',
+          model: request.model,
           messages: request.messages,
-          temperature: request.temperature ?? 0.7,
-          max_tokens: request.max_tokens ?? 4096,
-          stream: request.stream ?? false,
+          temperature: request.temperature,
+          max_tokens: request.max_tokens,
+          stream: false, // Explicitly request a non-streaming response
         }),
         signal: AbortSignal.timeout(60000), // 60 second timeout
       })
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => ({}))
-        const errorMessage = errorBody.error?.message || `HTTP ${response.status}: ${response.statusText}`
-        
-        // Handle specific OpenAI error types
-        if (response.status === 401) {
-          throw new ValidationError('Invalid API key', 'api_key', context)
-        } else if (response.status === 429) {
-          throw new LLMProviderError('openai', 'Rate limit exceeded', context)
-        } else if (response.status >= 500) {
-          throw new LLMProviderError('openai', 'OpenAI service unavailable', context)
-        } else {
-          throw new LLMProviderError('openai', errorMessage, context)
-        }
+        const errorMessage = errorBody.error || `HTTP ${response.status}: ${response.statusText}`
+        throw new LLMProviderError('openai-proxy', errorMessage, context)
       }
 
       const data = await response.json()
-      
-      if (!data.choices || data.choices.length === 0) {
-        throw new LLMProviderError('openai', 'No response choices returned', context)
-      }
-
-      return {
-        content: data.choices[0].message?.content || '',
-        finish_reason: data.choices[0].finish_reason,
-        usage: data.usage,
-      }
+      return data as OpenAIResponse
 
     } catch (error) {
       await errorManager.logError(error as Error, context)
@@ -187,43 +160,35 @@ export class OpenAIService {
     })
 
     try {
-      const config = request.userId ? await this.getConfig(request.userId) : null
-      const apiKey = config?.apiKey
-      const baseUrl = config?.baseUrl || this.baseUrl
-      const model = request.model || 'gpt-3.5-turbo'
-
-      if (!apiKey) {
-        throw new ValidationError('OpenAI API key not configured', 'api_key', context)
+      if (!request.userId) {
+        throw new ValidationError('User ID is required for streaming chat', 'userId', context)
       }
-
       if (!request.messages || request.messages.length === 0) {
         throw new ValidationError('Messages array is required and cannot be empty', 'messages', context)
       }
 
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await fetch('/api/llm/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'User-Agent': 'Personal-LLM-Tool/1.0',
         },
         body: JSON.stringify({
-          model,
+          provider: 'openai',
+          model: request.model,
           messages: request.messages,
-          temperature: request.temperature ?? 0.7,
-          max_tokens: request.max_tokens ?? 4096,
-          stream: true,
+          temperature: request.temperature,
+          max_tokens: request.max_tokens,
         }),
       })
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => ({}))
-        const errorMessage = errorBody.error?.message || `HTTP ${response.status}: ${response.statusText}`
-        throw new LLMProviderError('openai', errorMessage, context)
+        const errorMessage = errorBody.error || `HTTP ${response.status}: ${response.statusText}`
+        throw new LLMProviderError('openai-proxy', errorMessage, context)
       }
 
       if (!response.body) {
-        throw new LLMProviderError('openai', 'No response body received', context)
+        throw new LLMProviderError('openai-proxy', 'No response body received from backend', context)
       }
 
       const reader = response.body.getReader()
@@ -233,35 +198,8 @@ export class OpenAIService {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-
           const chunk = decoder.decode(value, { stream: true })
-          const lines = chunk.split('\n').filter(line => line.trim() !== '')
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6)
-              
-              if (data === '[DONE]') {
-                return
-              }
-
-              try {
-                const parsed: OpenAIStreamChunk = JSON.parse(data)
-                const content = parsed.choices[0]?.delta?.content
-                
-                if (content) {
-                  yield content
-                }
-
-                if (parsed.choices[0]?.finish_reason) {
-                  return
-                }
-              } catch (parseError) {
-                // Skip malformed chunks
-                continue
-              }
-            }
-          }
+          yield chunk
         }
       } finally {
         reader.releaseLock()

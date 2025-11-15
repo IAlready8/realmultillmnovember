@@ -1,5 +1,7 @@
 import { errorManager, LLMProviderError, createErrorContext, ValidationError } from '@/lib/error-system'
 import { OpenAIService } from './llm-providers/openai-service'
+import { AnthropicService } from './llm-providers/anthropic-service'
+import { GoogleAIService } from './llm-providers/google-service'
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -19,9 +21,8 @@ export interface StreamChatOptions {
 // Provider service registry
 const providerServices = {
   openai: () => OpenAIService.getInstance(),
-  // Add other providers here as they're implemented
-  // anthropic: () => AnthropicService.getInstance(),
-  // googleai: () => GoogleAIService.getInstance(),
+  anthropic: () => AnthropicService.getInstance(),
+  googleai: () => GoogleAIService.getInstance(),
 }
 
 export async function sendChatMessage(

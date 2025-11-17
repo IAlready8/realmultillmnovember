@@ -2,8 +2,10 @@ import { auth } from '@/lib/auth'
 import { redirect } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { BillingClient } from './billing-client'
-import { SubscriptionTier } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+
+// Define the type for subscription tier as string
+type SubscriptionTier = 'FREE' | 'PRO' | 'ENTERPRISE';
 
 /**
  * Server page to handle billing and subscription management.
@@ -24,7 +26,7 @@ export default async function BillingPage() {
       stripeCurrentPeriodEnd: true,
     },
   })
-  
+
   const tier = subscription?.tier || 'FREE'
 
   return (
@@ -38,7 +40,7 @@ export default async function BillingPage() {
         </CardHeader>
         <CardContent>
           <BillingClient
-            tier={tier}
+            tier={tier as SubscriptionTier}
             periodEnd={subscription?.stripeCurrentPeriodEnd?.toLocaleDateString() || null}
           />
         </CardContent>

@@ -65,7 +65,7 @@ export async function POST(
   if (!updatedConversation) {
     return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
   }
-  
+
   return NextResponse.json(updatedConversation)
 }
 

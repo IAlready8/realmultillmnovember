@@ -32,7 +32,7 @@ export default function MultiChatPage() {
     isLoading: false,
     activeProviders: ['openai', 'anthropic', 'google']
   })
-  
+
   const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
   const [selectedModels, setSelectedModels] = useState<Record<string, string>>({})
   const { toast } = useToast()
@@ -55,7 +55,7 @@ export default function MultiChatPage() {
       if (stored) {
         const configs = JSON.parse(stored)
         setProviderConfigs(configs)
-        
+
         // Set default models based on provider configs
         const defaults: Record<string, string> = {}
         Object.keys(configs).forEach(provider => {
@@ -112,7 +112,7 @@ export default function MultiChatPage() {
     }))
 
     // Call each provider
-    const providerPromises = chatState.activeProviders.map(provider => 
+    const providerPromises = chatState.activeProviders.map(provider =>
       callProvider(provider, chatState.messages.concat(userMessage))
     )
 
@@ -182,6 +182,12 @@ export default function MultiChatPage() {
         })
         return { ...prev, messages: updatedMessages }
       })
+      
+      toast({
+        title: 'Provider Error',
+        description: `Failed to get response from ${provider}: ${(error as Error).message || 'Unknown error'}`,
+        variant: 'destructive'
+      })
     }
   }
 
@@ -241,14 +247,14 @@ export default function MultiChatPage() {
           <div className="flex-1 mb-4 rounded-md border p-4 bg-muted/20 max-h-[calc(100vh-200px)] overflow-y-auto">
             <div className="space-y-4">
               {chatState.messages.map((message) => (
-                <div 
-                  key={message.id} 
+                <div
+                  key={message.id}
                   className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
-                  <div 
+                  <div
                     className={`max-w-[80%] rounded-lg p-4 ${
-                      message.role === 'user' 
-                        ? 'bg-primary text-primary-foreground' 
+                      message.role === 'user'
+                        ? 'bg-primary text-primary-foreground'
                         : 'bg-card border'
                     }`}
                   >

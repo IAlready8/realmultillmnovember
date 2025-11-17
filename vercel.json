@@ -1,11 +1,18 @@
 {
+  "version": 2,
   "builds": [
     {
       "src": "package.json",
-      "use": "@vercel/next"
+      "use": "@vercel/next",
+      "config": {
+        "serverless": true
+      }
     }
   ],
-  "env": {
-    "DATABASE_URL": "file:./prisma/dev.db"
-  }
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/"
+    }
+  ]
 }

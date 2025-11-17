@@ -2,8 +2,10 @@
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { SubscriptionTier } from '@prisma/client'
 import { useState } from 'react'
+
+// Define the type for subscription tier as string
+type SubscriptionTier = 'FREE' | 'PRO' | 'ENTERPRISE';
 
 interface BillingClientProps {
   tier: SubscriptionTier

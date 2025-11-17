@@ -5,7 +5,6 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import GitHubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { SubscriptionTier, TeamRole } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 
@@ -18,6 +17,26 @@ const DEMO_USERS = [
     password: "password123"
   }
 ];
+
+// Define the types for subscription tier and team role as strings
+type SubscriptionTier = 'FREE' | 'PRO' | 'ENTERPRISE';
+type TeamRole = 'OWNER' | 'ADMIN' | 'MEMBER';
+
+// Augment the NextAuth session to include our custom properties
+declare module 'next-auth' {
+  interface Session {
+    user: {
+      id: string;
+      role: TeamRole;
+      tier: SubscriptionTier;
+    } & DefaultSession['user'];
+  }
+
+  interface JWT {
+    role: TeamRole;
+    tier: SubscriptionTier;
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -107,7 +126,7 @@ export const authOptions: NextAuthOptions = {
 
         // For now, default role is MEMBER
         token.role = 'MEMBER';
-        token.tier = subscription?.tier || 'FREE';
+        token.tier = (subscription?.tier as SubscriptionTier) || 'FREE';
       }
       return token;
     }

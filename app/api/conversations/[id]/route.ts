@@ -1,72 +1,92 @@
+import { NextResponse } from 'next/server'
+import { getAuthenticatedUser } from '@/lib/api-auth'
+import { ConversationService } from '@/services/conversation-service.db'
+import { z } from 'zod'
 
-import { auth } from '@/lib/auth';
-import { conversationService } from '@/services/conversation-service';
-import { NextRequest, NextResponse } from 'next/server';
-import { errorManager, createErrorContext } from '@/lib/error-system';
-
-interface RouteParams {
-    params: {
-        id: string;
-    };
-}
+// Zod schema for adding messages
+const addMessagesSchema = z.array(
+    z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().min(1),
+      provider: z.string().optional(),
+      model: z.string().optional(),
+      cost: z.number().optional(),
+      latency: z.number().optional(),
+    })
+  ).min(1)
 
 /**
  * GET /api/conversations/[id]
- * Retrieves a single conversation by its ID.
+ * Retrieves a single, full conversation with all messages.
  */
-export async function GET(req: NextRequest, { params }: RouteParams) {
-    try {
-        const session = await auth();
-        if (!session?.user?.id) {
-            return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
-        }
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const authCheck = await getAuthenticatedUser()
+  if (authCheck instanceof NextResponse) return authCheck
+  const { user } = authCheck
 
-        const conversation = await conversationService.getConversation(params.id);
+  const { id } = params
+  const conversation = await ConversationService.getFullConversation(id, user.id)
 
-        // Ensure the user has access to this conversation
-        if (!conversation || conversation.userId !== session.user.id) {
-            return new NextResponse(JSON.stringify({ error: 'Conversation not found' }), { status: 404 });
-        }
+  if (!conversation) {
+    return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
+  }
 
-        return NextResponse.json(conversation);
-
-    } catch (error) {
-        const context = createErrorContext('/api/conversations/[id]/GET', undefined, { conversationId: params.id });
-        await errorManager.logError(error as Error, context);
-        return new NextResponse(JSON.stringify({ error: 'Failed to retrieve conversation' }), { status: 500 });
-    }
+  return NextResponse.json(conversation)
 }
 
 /**
  * POST /api/conversations/[id]
- * Adds a message to an existing conversation.
- * Expects body: { role: string, content: string, provider?: string, model?: string }
+ * Adds new messages to an existing conversation.
  */
-export async function POST(req: NextRequest, { params }: RouteParams) {
-    try {
-        const session = await auth();
-        if (!session?.user?.id) {
-            return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
-        }
+export async function POST(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const authCheck = await getAuthenticatedUser()
+  if (authCheck instanceof NextResponse) return authCheck
+  const { user } = authCheck
 
-        // First, verify the user has access to this conversation
-        const conversation = await conversationService.getConversation(params.id);
-        if (!conversation || conversation.userId !== session.user.id) {
-            return new NextResponse(JSON.stringify({ error: 'Conversation not found' }), { status: 404 });
-        }
+  const { id } = params
+  const body = await req.json()
+  const validation = addMessagesSchema.safeParse(body)
 
-        const messageData = await req.json();
+  if (!validation.success) {
+    return NextResponse.json(
+      { error: 'Invalid input', details: validation.error.flatten() },
+      { status: 400 }
+    )
+  }
 
-        if (!messageData.role || !messageData.content) {
-            return new NextResponse(JSON.stringify({ error: 'Invalid message format' }), { status: 400 });
-        }
+  const updatedConversation = await ConversationService.addMessages(id, user.id, validation.data)
 
-        const newMessage = await conversationService.addMessage(params.id, messageData);
-        return NextResponse.json(newMessage, { status: 201 });
+  if (!updatedConversation) {
+    return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
+  }
 
-    } catch (error) {
-        const context = createErrorContext('/api/conversations/[id]/POST', undefined, { conversationId: params.id });
-        await errorManager.logError(error as Error, context);
-        return new NextResponse(JSON.stringify({ error: 'Failed to add message' }), { status: 500 });
-    }
+  return NextResponse.json(updatedConversation)
+}
+
+/**
+ * DELETE /api/conversations/[id]
+ * Deletes a conversation and all its messages.
+ */
+export async function DELETE(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const authCheck = await getAuthenticatedUser()
+  if (authCheck instanceof NextResponse) return authCheck
+  const { user } = authCheck
+
+  const { id } = params
+  const success = await ConversationService.deleteConversation(id, user.id)
+
+  if (!success) {
+    return NextResponse.json({ error: 'Conversation not found or failed to delete' }, { status: 404 })
+  }
+
+  return NextResponse.json({ success: true }, { status: 200 })
 }

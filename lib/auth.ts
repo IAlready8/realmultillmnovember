@@ -1,4 +1,5 @@
 
+import NextAuth from "next-auth";
 import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
@@ -16,6 +17,26 @@ const DEMO_USERS = [
     password: "password123"
   }
 ];
+
+// Define the types for subscription tier and team role as strings
+type SubscriptionTier = 'FREE' | 'PRO' | 'ENTERPRISE';
+type TeamRole = 'OWNER' | 'ADMIN' | 'MEMBER';
+
+// Augment the NextAuth session to include our custom properties
+declare module 'next-auth' {
+  interface Session {
+    user: {
+      id: string;
+      role: TeamRole;
+      tier: SubscriptionTier;
+    } & DefaultSession['user'];
+  }
+
+  interface JWT {
+    role: TeamRole;
+    tier: SubscriptionTier;
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -38,12 +59,12 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials?.password) {
           return null;
         }
-        
+
         // Check demo users first (for development)
         const demoUser = DEMO_USERS.find(
           (user) => user.email === credentials.email && user.password === credentials.password
         );
-        
+
         if (demoUser) {
           return {
             id: demoUser.id,
@@ -51,16 +72,16 @@ export const authOptions: NextAuthOptions = {
             email: demoUser.email
           };
         }
-        
+
         // Check database users
         try {
           const user = await prisma.user.findUnique({
             where: { email: credentials.email }
           });
-          
+
           if (user && user.password) {
             const isValidPassword = await bcrypt.compare(credentials.password, user.password);
-            
+
             if (isValidPassword) {
               return {
                 id: user.id,
@@ -72,7 +93,7 @@ export const authOptions: NextAuthOptions = {
         } catch (error) {
           console.error("Auth error:", error);
         }
-        
+
         return null;
       }
     }),
@@ -86,12 +107,26 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (token && session.user) {
         session.user.id = token.sub!;
+        session.user.role = token.role as TeamRole;
+        session.user.tier = token.tier as SubscriptionTier;
       }
       return session;
     },
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
+      }
+      // Fetch subscription and role info to add to token
+      if (token.sub) {
+        // Fetch subscription
+        const subscription = await prisma.subscription.findUnique({
+          where: { userId: token.sub },
+          select: { tier: true },
+        });
+
+        // For now, default role is MEMBER
+        token.role = 'MEMBER';
+        token.tier = (subscription?.tier as SubscriptionTier) || 'FREE';
       }
       return token;
     }
@@ -103,3 +138,6 @@ export const authOptions: NextAuthOptions = {
   },
   secret: process.env.NEXTAUTH_SECRET || "your-secret-key",
 };
+
+const handler = NextAuth(authOptions);
+export const { auth, signIn, signOut } = handler;

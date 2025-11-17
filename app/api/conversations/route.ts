@@ -1,54 +1,66 @@
+import { NextResponse } from 'next/server'
+import { getAuthenticatedUser } from '@/lib/api-auth'
+import { ConversationService } from '@/services/conversation-service.db'
+import { z } from 'zod'
 
-import { auth } from '@/lib/auth';
-import { conversationService } from '@/services/conversation-service';
-import { NextRequest, NextResponse } from 'next/server';
-import { errorManager, createErrorContext } from '@/lib/error-system';
+// Zod schema for creating a conversation
+const createConvoSchema = z.object({
+  title: z.string().min(1).max(255),
+  messages: z.array(
+    z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().min(1),
+      provider: z.string().optional(),
+      model: z.string().optional(),
+      cost: z.number().optional(),
+      latency: z.number().optional(),
+    })
+  ).min(1),
+})
 
 /**
  * GET /api/conversations
- * Retrieves all conversations for the authenticated user.
+ * Retrieves all conversations (metadata) for the authenticated user.
  */
-export async function GET(req: NextRequest) {
-    try {
-        const session = await auth();
-        if (!session?.user?.id) {
-            return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
-        }
+export async function GET(req: Request) {
+  const authCheck = await getAuthenticatedUser()
+  if (authCheck instanceof NextResponse) return authCheck
+  const { user } = authCheck
 
-        const conversations = await conversationService.getConversations(session.user.id);
-        return NextResponse.json(conversations);
-
-    } catch (error) {
-        const context = createErrorContext('/api/conversations/GET');
-        await errorManager.logError(error as Error, context);
-        return new NextResponse(JSON.stringify({ error: 'Failed to retrieve conversations' }), { status: 500 });
-    }
+  const conversations = await ConversationService.getConversationsByUserId(user.id)
+  return NextResponse.json(conversations)
 }
 
 /**
  * POST /api/conversations
- * Creates a new conversation.
- * Expects body: { title: string, messages: MessageInput[] }
+ * Creates a new conversation and its first messages.
  */
-export async function POST(req: NextRequest) {
-    try {
-        const session = await auth();
-        if (!session?.user?.id) {
-            return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
-        }
+export async function POST(req: Request) {
+  const authCheck = await getAuthenticatedUser()
+  if (authCheck instanceof NextResponse) return authCheck
+  const { user } = authCheck
 
-        const { title, messages } = await req.json();
+  const body = await req.json()
+  const validation = createConvoSchema.safeParse(body)
 
-        if (!title || !messages || !Array.isArray(messages)) {
-            return new NextResponse(JSON.stringify({ error: 'Invalid request body' }), { status: 400 });
-        }
+  if (!validation.success) {
+    return NextResponse.json(
+      { error: 'Invalid input', details: validation.error.flatten() },
+      { status: 400 }
+    )
+  }
 
-        const newConversation = await conversationService.createConversation(session.user.id, title, messages);
-        return NextResponse.json(newConversation, { status: 201 });
+  const { title, messages } = validation.data
 
-    } catch (error) {
-        const context = createErrorContext('/api/conversations/POST');
-        await errorManager.logError(error as Error, context);
-        return new NextResponse(JSON.stringify({ error: 'Failed to create conversation' }), { status: 500 });
-    }
+  try {
+    const newConversation = await ConversationService.createConversation(
+      user.id,
+      title,
+      messages
+    )
+    return NextResponse.json(newConversation, { status: 201 })
+  } catch (error) {
+    console.error('Error creating conversation:', error)
+    return NextResponse.json({ error: 'Failed to create conversation' }, { status: 500 })
+  }
 }

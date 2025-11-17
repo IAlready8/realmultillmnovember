@@ -47,6 +47,8 @@ model User {
   providerConfigs ProviderConfig[]
   goals         Goal[]
   personas      Persona[]
+  teamMemberships TeamMember[] // User's teams
+  subscription    Subscription?  // User's subscription
 }
 
 model VerificationToken {
@@ -123,4 +125,42 @@ model Persona {
   updatedAt   DateTime @updatedAt
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Model for team/organization
+model Team {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members   TeamMember[]
+}
+
+// Join table for Users and Teams, holding their role
+model TeamMember {
+  id        String   @id @default(cuid())
+  userId    String
+  teamId    String
+  role      String   @default("MEMBER") // Using string instead of enum
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+}
+
+// Model for managing user subscriptions (e.g., via Stripe)
+model Subscription {
+  id                 String           @id @default(cuid())
+  userId             String           @unique
+  tier               String           @default("FREE") // Using string instead of enum
+
+  // Stripe-specific fields
+  stripeCustomerId   String?          @unique
+  stripeSubscriptionId String?        @unique
+  stripePriceId        String?
+  stripeCurrentPeriodEnd DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

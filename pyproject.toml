@@ -11,6 +11,11 @@ python = "^3.11"
 typer = {extras = ["all"], version = "^0.9.0"}
 httpx = {extras = ["http2"], version = "^0.25.0"}
 pydantic = "^2.4.2"
+pydantic-settings = "^2.0.3"
+fastapi = "^0.104.1"
+redis = "^5.0.1"
+structlog = "^23.2.0"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
 # Add other core dependencies here
 
 [tool.poetry.group.dev.dependencies]
